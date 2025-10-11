@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "id": "eloquenceauth",
+  "version": "${version}",
+  "name": "EloquenceAuth",
+  "description": "",
+  "authors": [],
+  "contact": {},
+  "license": "All-Rights-Reserved",
+  "icon": "assets/eloquenceauth/icon.png",
+  "environment": "server",
+  "entrypoints": {
+    "main": [
+      "org.eloquence.eloquenceauth.Eloquenceauth"
+    ]
+  },
+  "mixins": [
+    "eloquenceauth.mixins.json"
+  ],
+  "depends": {
+    "fabricloader": ">=${loader_version}",
+    "fabric": "*",
+    "minecraft": "${minecraft_version}"
+  }
+}
