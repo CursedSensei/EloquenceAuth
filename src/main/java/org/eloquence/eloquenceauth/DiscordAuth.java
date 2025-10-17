@@ -4,7 +4,10 @@ import org.eloquence.eloquenceauth.configs.ModConfigs;
 import org.slf4j.Logger;
 
 import java.io.IOException;
+import java.net.InetAddress;
 import java.net.ServerSocket;
+import java.net.Socket;
+import java.nio.channels.ClosedByInterruptException;
 
 public class DiscordAuth extends Thread {
     private final Logger LOGGER;
@@ -26,23 +29,46 @@ public class DiscordAuth extends Thread {
 
     @Override
     public void run() {
-        while (running) {
-            while (running && listener == null) {
-                try {
-                    listener = new ServerSocket(ModConfigs.DISCORD_AUTH_PORT);
-                    break;
-                } catch (IOException ignored) {}
-
-                try {
-                    Thread.sleep(5000);
-                } catch (InterruptedException ignored) {}
+        while (running && listener == null) {
+            try {
+                listener = new ServerSocket(ModConfigs.DISCORD_AUTH_PORT, 50, InetAddress.getLoopbackAddress());
+                break;
+            } catch (IOException ignored) {
+                LOGGER.error("Failed. Retrying to bind port: {} in 5 secs", ModConfigs.DISCORD_AUTH_PORT);
             }
 
-            LOGGER.info("Successfully binded to port: {}", ModConfigs.DISCORD_AUTH_PORT);
-
-            // algo here
+            try {
+                Thread.sleep(5000);
+            } catch (InterruptedException ignored) {
+                return;
+            }
         }
 
-        LOGGER.info("Closing Discord Auth");
+        LOGGER.info("Successfully bound to port: {}", ModConfigs.DISCORD_AUTH_PORT);
+
+        Socket authClient;
+
+        while (running) {
+            LOGGER.info("Waiting for Auth Client connection");
+
+            try {
+                authClient = listener.accept();
+            } catch (ClosedByInterruptException ignored) {
+                break;
+            } catch (IOException ignored) {
+                continue;
+            }
+
+            // algo
+
+            try {
+                authClient.close();
+            } catch (IOException ignored) {}
+        }
+
+        LOGGER.info("Closing DiscordAuth");
+        try {
+            listener.close();
+        } catch (IOException ignored) {}
     }
 }
