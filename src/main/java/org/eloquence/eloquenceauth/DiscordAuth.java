@@ -1,18 +1,25 @@
 package org.eloquence.eloquenceauth;
 
-import org.eloquence.eloquenceauth.configs.ModConfigs;
 import org.slf4j.Logger;
 
 import java.io.IOException;
-import java.net.InetAddress;
-import java.net.ServerSocket;
-import java.net.Socket;
-import java.nio.channels.ClosedByInterruptException;
+import java.net.*;
+import java.nio.ByteBuffer;
+import java.nio.channels.ServerSocketChannel;
+import java.nio.channels.SocketChannel;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.util.concurrent.ConcurrentHashMap;
 
 public class DiscordAuth extends Thread {
     private final Logger LOGGER;
-    private ServerSocket listener = null;
+    private SocketChannel client = null;
     private boolean running = true;
+    private ConcurrentHashMap<String, AuthTicket> tickets = new ConcurrentHashMap<>();
+
+    // And used as lock :P
+    private static final Path SOCKET_PATH = Paths.get("DiscordAuth.sock");
 
     public DiscordAuth(Logger logger) {
         super("DiscordAuth Thread");
@@ -29,12 +36,32 @@ public class DiscordAuth extends Thread {
 
     @Override
     public void run() {
-        while (running && listener == null) {
+        ServerSocketChannel listener = null;
+
+        while (running) {
             try {
-                listener = new ServerSocket(ModConfigs.DISCORD_AUTH_PORT, 50, InetAddress.getLoopbackAddress());
+                try {
+                    Files.deleteIfExists(SOCKET_PATH);
+                } catch (IOException e) {
+                    LOGGER.error("Unable to delete unix socket file. Close any program using this file");
+                }
+
+                UnixDomainSocketAddress address = UnixDomainSocketAddress.of(SOCKET_PATH);
+                listener = ServerSocketChannel.open(StandardProtocolFamily.UNIX);
+                listener.bind(address);
                 break;
             } catch (IOException ignored) {
-                LOGGER.error("Failed. Retrying to bind port: {} in 5 secs", ModConfigs.DISCORD_AUTH_PORT);
+                LOGGER.error("Failed. Retrying to bind to unix socket file");
+
+                if (listener != null) {
+                    try {
+                        listener.close();
+                    }
+                    catch (IOException ignored1) { }
+                    finally {
+                        listener = null;
+                    }
+                }
             }
 
             try {
@@ -44,26 +71,39 @@ public class DiscordAuth extends Thread {
             }
         }
 
-        LOGGER.info("Successfully bound to port: {}", ModConfigs.DISCORD_AUTH_PORT);
+        assert listener != null;
 
-        Socket authClient;
+        LOGGER.info("Successfully listening to socket file");
 
         while (running) {
             LOGGER.info("Waiting for Auth Client connection");
 
-            try {
-                authClient = listener.accept();
-            } catch (ClosedByInterruptException ignored) {
-                break;
-            } catch (IOException ignored) {
-                continue;
+            ByteBuffer buffer = ByteBuffer.allocate(90);
+
+            synchronized (SOCKET_PATH) {
+                try {
+                    client = listener.accept();
+                } catch (IOException ignored) { }
             }
 
-            // algo
+            while (running && client.isConnected()) {
+                buffer.clear();
+                try {
+                    client.read(buffer);
+                } catch (IOException ignored) {
+                    continue;
+                }
 
-            try {
-                authClient.close();
-            } catch (IOException ignored) {}
+                // read algo to threadsafe hashmap
+            }
+
+            synchronized (SOCKET_PATH) {
+                try {
+                    client.close();
+                } catch (IOException ignored) { }
+
+                client = null;
+            }
         }
 
         LOGGER.info("Closing DiscordAuth");
