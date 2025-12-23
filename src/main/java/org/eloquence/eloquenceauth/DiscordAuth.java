@@ -43,7 +43,7 @@ public class DiscordAuth extends Thread {
                 try {
                     Files.deleteIfExists(SOCKET_PATH);
                 } catch (IOException e) {
-                    LOGGER.error("Unable to delete unix socket file. Close any program using this file");
+                    LOGGER.error("Unable to delete unix socket file. Close any program using this file: {}", SOCKET_PATH);
                 }
 
                 UnixDomainSocketAddress address = UnixDomainSocketAddress.of(SOCKET_PATH);

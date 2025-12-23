@@ -2,7 +2,7 @@ package org.eloquence.eloquenceauth.configs;
 
 import com.mojang.datafixers.util.Pair;
 
-import static org.eloquence.eloquenceauth.Eloquenceauth.MOD_ID;
+import static org.eloquence.eloquenceauth.EloquenceAuth.MOD_ID;
 
 public class ModConfigs {
     public static SimpleConfig CONFIG;

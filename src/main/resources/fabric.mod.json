@@ -11,7 +11,7 @@
   "environment": "server",
   "entrypoints": {
     "main": [
-      "org.eloquence.eloquenceauth.Eloquenceauth"
+      "org.eloquence.eloquenceauth.EloquenceAuth"
     ]
   },
   "mixins": [
