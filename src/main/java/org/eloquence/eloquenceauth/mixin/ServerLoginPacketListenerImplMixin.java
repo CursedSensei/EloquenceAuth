@@ -26,6 +26,8 @@ public abstract class ServerLoginPacketListenerImplMixin {
         if (component == null) {
             if (EloquenceAuth.hasPlayer(gameProfile, playerList)) {
                 component = Component.literal("You are already in the server");
+            } else if (!EloquenceAuth.authenticatePlayer(gameProfile.getName())) {
+                component = Component.literal("Authentication timeout (5s) or denied");
             }
         }
 

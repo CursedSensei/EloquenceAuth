@@ -1,25 +1,23 @@
 package org.eloquence.eloquenceauth;
 
+import org.eloquence.eloquenceauth.configs.ModConfigs;
 import org.slf4j.Logger;
 
+import java.io.*;
 import java.io.IOException;
-import java.net.*;
-import java.nio.ByteBuffer;
-import java.nio.channels.ServerSocketChannel;
-import java.nio.channels.SocketChannel;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.Paths;
+import java.net.ServerSocket;
+import java.net.Socket;
 import java.util.concurrent.ConcurrentHashMap;
 
 public class DiscordAuth extends Thread {
     private final Logger LOGGER;
-    private SocketChannel client = null;
-    private boolean running = true;
-    private ConcurrentHashMap<String, AuthTicket> tickets = new ConcurrentHashMap<>();
-
-    // And used as lock :P
-    private static final Path SOCKET_PATH = Paths.get("DiscordAuth.sock");
+    private final Object clientLock = new Object();
+    private Socket client = null;
+    private BufferedWriter clientWriter = null;
+    private Thread clientReaderThread = null;
+    private ServerSocket listener = null;
+    private volatile boolean running = true;
+    private final ConcurrentHashMap<String, AuthTicket> tickets = new ConcurrentHashMap<>();
 
     public DiscordAuth(Logger logger) {
         super("DiscordAuth Thread");
@@ -31,84 +29,166 @@ public class DiscordAuth extends Thread {
 
     public void close() {
         running = false;
+        closeQuietly(listener);
+        synchronized (clientLock) {
+            closeClientLocked();
+        }
         this.interrupt();
     }
 
     @Override
     public void run() {
-        ServerSocketChannel listener = null;
+        try (ServerSocket listener = new ServerSocket(ModConfigs.DISCORD_AUTH_PORT)) {
+            this.listener = listener;
+            listener.setReuseAddress(true);
+            LOGGER.info("Listening for Discord auth TCP client on port {}", ModConfigs.DISCORD_AUTH_PORT);
 
-        while (running) {
-            try {
-                try {
-                    Files.deleteIfExists(SOCKET_PATH);
-                } catch (IOException e) {
-                    LOGGER.error("Unable to delete unix socket file. Close any program using this file: {}", SOCKET_PATH);
-                }
+            while (running) {
+                Socket incoming = listener.accept();
 
-                UnixDomainSocketAddress address = UnixDomainSocketAddress.of(SOCKET_PATH);
-                listener = ServerSocketChannel.open(StandardProtocolFamily.UNIX);
-                listener.bind(address);
-                break;
-            } catch (IOException ignored) {
-                LOGGER.error("Failed. Retrying to bind to unix socket file");
-
-                if (listener != null) {
-                    try {
-                        listener.close();
+                synchronized (clientLock) {
+                    if (hasActiveClientLocked()) {
+                        closeQuietly(incoming);
+                        continue;
                     }
-                    catch (IOException ignored1) { }
-                    finally {
-                        listener = null;
-                    }
+
+                    client = incoming;
+                    clientWriter = new BufferedWriter(new OutputStreamWriter(client.getOutputStream()));
+                    startClientReaderLocked(client);
+                    LOGGER.info("Discord auth client connected from {}", client.getRemoteSocketAddress());
                 }
             }
-
-            try {
-                Thread.sleep(5000);
-            } catch (InterruptedException ignored) {
-                return;
+        } catch (IOException e) {
+            if (running) {
+                LOGGER.error("Discord auth TCP server stopped unexpectedly", e);
+            }
+        } finally {
+            this.listener = null;
+            synchronized (clientLock) {
+                closeClientLocked();
             }
         }
+    }
 
-        assert listener != null;
+    public boolean authenticate(String name, long timeoutMs) {
+        AuthTicket ticket = new AuthTicket(name);
+        tickets.put(name, ticket);
 
-        LOGGER.info("Successfully listening to socket file");
-
-        while (running) {
-            LOGGER.info("Waiting for Auth Client connection");
-
-            ByteBuffer buffer = ByteBuffer.allocate(90);
-
-            synchronized (SOCKET_PATH) {
-                try {
-                    client = listener.accept();
-                } catch (IOException ignored) { }
-            }
-
-            while (running && client.isConnected()) {
-                buffer.clear();
-                try {
-                    client.read(buffer);
-                } catch (IOException ignored) {
-                    continue;
-                }
-
-                // read algo to threadsafe hashmap
-            }
-
-            synchronized (SOCKET_PATH) {
-                try {
-                    client.close();
-                } catch (IOException ignored) { }
-
-                client = null;
-            }
-        }
-
-        LOGGER.info("Closing DiscordAuth");
         try {
-            listener.close();
-        } catch (IOException ignored) {}
+            if (!sendNewUserName(name)) {
+                return false;
+            }
+
+            synchronized (ticket) {
+                if (!ticket.complete) {
+                    try {
+                        ticket.wait(timeoutMs);
+                    } catch (InterruptedException ignored) {
+                        Thread.currentThread().interrupt();
+                    }
+                }
+            }
+
+            return ticket.complete && ticket.isAuthenticated;
+        } finally {
+            tickets.remove(name);
+        }
+    }
+
+    private boolean sendNewUserName(String name) {
+        synchronized (clientLock) {
+            if (!hasActiveClientLocked() || clientWriter == null) {
+                return false;
+            }
+
+            try {
+                clientWriter.write(name);
+                clientWriter.newLine();
+                clientWriter.flush();
+                return true;
+            } catch (IOException e) {
+                closeClientLocked();
+                return false;
+            }
+        }
+    }
+
+    private void startClientReaderLocked(Socket socket) {
+        clientReaderThread = new Thread(() -> {
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(socket.getInputStream()))) {
+                String line;
+                while (running && (line = reader.readLine()) != null) {
+                    handleAuthReply(line.trim());
+                }
+            } catch (IOException ignored) {
+            } finally {
+                synchronized (clientLock) {
+                    closeClientLocked();
+                }
+            }
+        }, "DiscordAuth Client Reader");
+        clientReaderThread.setDaemon(true);
+        clientReaderThread.start();
+    }
+
+    private void handleAuthReply(String line) {
+        if (line.isEmpty()) {
+            return;
+        }
+
+        boolean authenticated = true;
+        String name = line;
+
+        if (line.startsWith("ALLOW ")) {
+            name = line.substring("ALLOW ".length()).trim();
+            authenticated = true;
+        } else if (line.startsWith("DENY ")) {
+            name = line.substring("DENY ".length()).trim();
+            authenticated = false;
+        }
+
+        if (name.isEmpty()) {
+            return;
+        }
+
+        AuthTicket ticket = tickets.get(name);
+        if (ticket == null) {
+            return;
+        }
+
+        synchronized (ticket) {
+            ticket.isAuthenticated = authenticated;
+            ticket.complete = true;
+            ticket.notifyAll();
+        }
+    }
+
+    private boolean hasActiveClientLocked() {
+        return client != null && client.isConnected() && !client.isClosed();
+    }
+
+    private void closeClientLocked() {
+        closeQuietly(client);
+        closeQuietly(clientWriter);
+        client = null;
+        clientWriter = null;
+    }
+
+    private void closeQuietly(Closeable closeable) {
+        if (closeable != null) {
+            try {
+                closeable.close();
+            } catch (IOException ignored) {
+            }
+        }
+    }
+
+    private void closeQuietly(Socket socket) {
+        if (socket != null) {
+            try {
+                socket.close();
+            } catch (IOException ignored) {
+            }
+        }
     }
 }
