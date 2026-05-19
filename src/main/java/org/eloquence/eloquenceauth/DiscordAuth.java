@@ -11,6 +11,7 @@ import java.io.InputStreamReader;
 import java.io.OutputStreamWriter;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.net.SocketTimeoutException;
 import java.util.concurrent.ConcurrentHashMap;
 
 public class DiscordAuth extends Thread {
@@ -56,10 +57,15 @@ public class DiscordAuth extends Thread {
                         continue;
                     }
 
-                    client = incoming;
-                    clientWriter = new BufferedWriter(new OutputStreamWriter(client.getOutputStream()));
-                    startClientReaderLocked(client);
-                    LOGGER.info("Discord auth client connected from {}", client.getRemoteSocketAddress());
+                    try {
+                        incoming.setSoTimeout(1000);
+                        client = incoming;
+                        clientWriter = new BufferedWriter(new OutputStreamWriter(client.getOutputStream()));
+                        startClientReaderLocked(client);
+                        LOGGER.info("Discord auth client connected from {}", client.getRemoteSocketAddress());
+                    } catch (IOException e) {
+                        closeClientLocked();
+                    }
                 }
             }
         } catch (IOException e) {
@@ -120,10 +126,17 @@ public class DiscordAuth extends Thread {
 
     private void startClientReaderLocked(Socket socket) {
         clientReaderThread = new Thread(() -> {
-            try (BufferedReader reader = new BufferedReader(new InputStreamReader(socket.getInputStream()))) {
-                String line;
-                while (running && (line = reader.readLine()) != null) {
-                    handleAuthReply(line.trim());
+            try {
+                BufferedReader reader = new BufferedReader(new InputStreamReader(socket.getInputStream()));
+                while (running && !socket.isClosed()) {
+                    try {
+                        String line = reader.readLine();
+                        if (line == null) {
+                            break;
+                        }
+                        handleAuthReply(line.trim());
+                    } catch (SocketTimeoutException ignored) {
+                    }
                 }
             } catch (IOException ignored) {
             } finally {
@@ -141,14 +154,16 @@ public class DiscordAuth extends Thread {
             return;
         }
 
-        boolean authenticated = true;
-        String name = line;
+        boolean authenticated = false;
+        String name;
 
         if (line.startsWith("ALLOW ")) {
             name = line.substring("ALLOW ".length()).trim();
         } else if (line.startsWith("DENY ")) {
             name = line.substring("DENY ".length()).trim();
             authenticated = false;
+        } else {
+            return;
         }
 
         if (name.isEmpty()) {
@@ -168,7 +183,7 @@ public class DiscordAuth extends Thread {
     }
 
     private boolean hasActiveClientLocked() {
-        return client != null && client.isConnected() && !client.isClosed();
+        return client != null && !client.isClosed();
     }
 
     private void closeClientLocked() {
