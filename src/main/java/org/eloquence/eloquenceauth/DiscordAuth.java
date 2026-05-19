@@ -3,8 +3,12 @@ package org.eloquence.eloquenceauth;
 import org.eloquence.eloquenceauth.configs.ModConfigs;
 import org.slf4j.Logger;
 
-import java.io.*;
 import java.io.IOException;
+import java.io.BufferedReader;
+import java.io.BufferedWriter;
+import java.io.Closeable;
+import java.io.InputStreamReader;
+import java.io.OutputStreamWriter;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.util.concurrent.ConcurrentHashMap;
@@ -38,8 +42,8 @@ public class DiscordAuth extends Thread {
 
     @Override
     public void run() {
-        try (ServerSocket listener = new ServerSocket(ModConfigs.DISCORD_AUTH_PORT)) {
-            this.listener = listener;
+        try {
+            listener = new ServerSocket(ModConfigs.DISCORD_AUTH_PORT);
             listener.setReuseAddress(true);
             LOGGER.info("Listening for Discord auth TCP client on port {}", ModConfigs.DISCORD_AUTH_PORT);
 
@@ -63,7 +67,8 @@ public class DiscordAuth extends Thread {
                 LOGGER.error("Discord auth TCP server stopped unexpectedly", e);
             }
         } finally {
-            this.listener = null;
+            closeQuietly(listener);
+            listener = null;
             synchronized (clientLock) {
                 closeClientLocked();
             }
@@ -141,7 +146,6 @@ public class DiscordAuth extends Thread {
 
         if (line.startsWith("ALLOW ")) {
             name = line.substring("ALLOW ".length()).trim();
-            authenticated = true;
         } else if (line.startsWith("DENY ")) {
             name = line.substring("DENY ".length()).trim();
             authenticated = false;
@@ -183,12 +187,4 @@ public class DiscordAuth extends Thread {
         }
     }
 
-    private void closeQuietly(Socket socket) {
-        if (socket != null) {
-            try {
-                socket.close();
-            } catch (IOException ignored) {
-            }
-        }
-    }
 }
