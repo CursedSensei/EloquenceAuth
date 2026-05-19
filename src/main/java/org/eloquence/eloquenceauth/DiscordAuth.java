@@ -159,9 +159,9 @@ public class DiscordAuth extends Thread {
 
         if (line.startsWith("ALLOW ")) {
             name = line.substring("ALLOW ".length()).trim();
+            authenticated = true;
         } else if (line.startsWith("DENY ")) {
             name = line.substring("DENY ".length()).trim();
-            authenticated = false;
         } else {
             return;
         }
